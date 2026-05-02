@@ -44,13 +44,31 @@ def extract_event_slug(url):
     return match.group(1)
 
 
-def fetch_event(api_key, event_slug):
-    """Fetch event details by slug. Returns event JSON or None."""
+def lookup_entity(api_key, slug):
+    """Resolve a URL slug to an entity (event, calendar, etc.) via the Luma API."""
+    headers = make_headers(api_key)
+    resp = requests.get(
+        f"{BASE_URL}/v1/entity/lookup",
+        headers=headers,
+        params={"slug": slug},
+        timeout=30,
+    )
+    if resp.status_code == 401:
+        print("Error: Invalid API key. Run --setup to update it.")
+        sys.exit(1)
+    if resp.status_code == 404:
+        return None
+    resp.raise_for_status()
+    return resp.json()
+
+
+def fetch_event(api_key, event_api_id):
+    """Fetch event details by api_id. Returns event JSON or None."""
     headers = make_headers(api_key)
     resp = requests.get(
         f"{BASE_URL}/event/get",
         headers=headers,
-        params={"event_api_id": event_slug},
+        params={"event_api_id": event_api_id},
         timeout=30,
     )
     if resp.status_code == 401:
@@ -158,13 +176,13 @@ def export_guests(api_key):
         sys.exit(1)
 
     print(f"Looking up event: {slug}...")
-    event = fetch_event(api_key, slug)
-    if not event:
+    entity = lookup_entity(api_key, slug)
+    if not entity:
         print(f'Error: Event not found for "{slug}". Check the URL and try again.')
         sys.exit(1)
 
-    event_name = event.get("name", slug)
-    event_api_id = event.get("api_id", event.get("event_api_id", slug))
+    event_api_id = entity.get("api_id", slug)
+    event_name = entity.get("name", slug)
     print(f"Event found: {event_name}")
     print("Fetching guest list...")
 
