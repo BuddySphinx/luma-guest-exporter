@@ -59,8 +59,7 @@ def run_setup_email():
     # Test the credentials before saving
     print("Testing connection to Gmail...")
     try:
-        server = smtplib.SMTP("smtp.gmail.com", 587)
-        server.starttls()
+        server = smtplib.SMTP_SSL("smtp.gmail.com", 465)
         server.login(address, password)
         server.quit()
         print("Connection successful!")
@@ -129,8 +128,7 @@ def send_emails(config, guests, subject, body):
     print(f"\nSending {total} emails from {sender}...")
     print()
 
-    server = smtplib.SMTP("smtp.gmail.com", 587)
-    server.starttls()
+    server = smtplib.SMTP_SSL("smtp.gmail.com", 465)
 
     try:
         server.login(sender, password)
