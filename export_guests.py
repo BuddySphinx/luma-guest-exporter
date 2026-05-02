@@ -95,6 +95,7 @@ def fetch_guests(api_key, event_api_id):
     """Fetch all guests for an event, handling pagination. Returns list of guest dicts."""
     headers = make_headers(api_key)
     guests = []
+    seen_ids = set()
     cursor = None
     page = 0
 
@@ -139,18 +140,25 @@ def fetch_guests(api_key, event_api_id):
 
         data = resp.json()
         entries = data.get("entries", [])
-        guests.extend(entries)
-        page += 1
-        print(f"  Page {page}: {len(entries)} guests (total: {len(guests)})")
 
-        if not entries:
+        # Deduplicate: Luma API has a bug where it repeats the same guests
+        new_guests = []
+        for g in entries:
+            gid = g.get("api_id")
+            if gid not in seen_ids:
+                seen_ids.add(gid)
+                new_guests.append(g)
+
+        guests.extend(new_guests)
+        page += 1
+        print(f"  Page {page}: {len(new_guests)} new guests (total: {len(guests)})")
+
+        # Stop if no new guests (API pagination loop) or no entries
+        if not new_guests:
             break
         cursor = data.get("next_cursor")
         if not cursor:
             break
-
-        # Stay under Luma's 300 requests/minute rate limit
-        time.sleep(0.25)
 
     session.close()
     return guests
