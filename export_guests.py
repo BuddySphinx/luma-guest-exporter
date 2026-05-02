@@ -35,17 +35,39 @@ def make_headers(api_key):
     return {"x-luma-api-key": api_key, "Content-Type": "application/json"}
 
 
-def extract_event_slug(url):
-    """Extract event slug from a Luma URL like https://lu.ma/abc123."""
+def parse_event_url(url):
+    """Parse a Luma URL and return either an api_id or a slug.
+
+    Returns a dict: {"type": "api_id", "value": "evt-xxx"} or {"type": "slug", "value": "abc123"}
+    Returns None if the URL doesn't match any known Luma URL pattern.
+
+    Supported URL formats:
+      - Public event page:    https://luma.com/qc4qky2n
+      - Management overview:  https://luma.com/event/manage/evt-xxx/overview
+      - Guest list page:      https://luma.com/event/manage/evt-xxx/guests
+    """
     url = url.strip().rstrip("/")
-    match = re.match(r"https?://(?:www\.)?(?:lu\.ma|luma\.com)/([a-zA-Z0-9_-]+)", url)
-    if not match:
-        return None
-    return match.group(1)
+
+    # Management or guest URL: https://luma.com/event/manage/evt-xxx/overview or /guests
+    match = re.match(
+        r"https?://(?:www\.)?(?:lu\.ma|luma\.com)/event/manage/(evt-[a-zA-Z0-9_-]+)(?:/|$)",
+        url,
+    )
+    if match:
+        return {"type": "api_id", "value": match.group(1)}
+
+    # Public event page: https://luma.com/abc123 or https://lu.ma/abc123
+    match = re.match(
+        r"https?://(?:www\.)?(?:lu\.ma|luma\.com)/([a-zA-Z0-9_-]+)", url
+    )
+    if match:
+        return {"type": "slug", "value": match.group(1)}
+
+    return None
 
 
 def lookup_entity(api_key, slug):
-    """Resolve a URL slug to an entity (event, calendar, etc.) via the Luma API."""
+    """Resolve a URL slug to an entity via the Luma API. Returns event dict or None."""
     headers = make_headers(api_key)
     resp = requests.get(
         f"{BASE_URL}/v1/entity/lookup",
@@ -59,25 +81,11 @@ def lookup_entity(api_key, slug):
     if resp.status_code == 404:
         return None
     resp.raise_for_status()
-    return resp.json()
-
-
-def fetch_event(api_key, event_api_id):
-    """Fetch event details by api_id. Returns event JSON or None."""
-    headers = make_headers(api_key)
-    resp = requests.get(
-        f"{BASE_URL}/event/get",
-        headers=headers,
-        params={"event_api_id": event_api_id},
-        timeout=30,
-    )
-    if resp.status_code == 401:
-        print("Error: Invalid API key. Run --setup to update it.")
-        sys.exit(1)
-    if resp.status_code == 404:
-        return None
-    resp.raise_for_status()
-    return resp.json()
+    data = resp.json()
+    entity = data.get("entity", {})
+    if entity.get("type") == "event":
+        return entity.get("event")
+    return None
 
 
 def fetch_guests(api_key, event_api_id):
@@ -92,13 +100,17 @@ def fetch_guests(api_key, event_api_id):
             params["cursor"] = cursor
 
         resp = requests.get(
-            f"{BASE_URL}/event/get-guests",
+            f"{BASE_URL}/v1/event/get-guests",
             headers=headers,
             params=params,
             timeout=30,
         )
         if resp.status_code == 401:
             print("Error: Invalid API key. Run --setup to update it.")
+            sys.exit(1)
+        if resp.status_code == 403:
+            print("Error: You don't have access to this event's guest list.")
+            print("Make sure your API key belongs to the calendar that owns this event.")
             sys.exit(1)
         resp.raise_for_status()
 
@@ -149,16 +161,19 @@ def write_csv(event_name, guests):
 
     with open(filepath, "w", newline="", encoding="utf-8") as f:
         writer = csv.writer(f)
-        writer.writerow(["Name", "Email", "Status", "Ticket Type", "Registration Date"])
+        writer.writerow(["Name", "Email", "First Name", "Last Name", "Status", "Ticket Type", "Registration Date"])
         for guest in guests:
-            name = guest.get("name", guest.get("guest_name", ""))
-            email = guest.get("email", guest.get("guest_email", ""))
-            status = guest.get("status", "")
-            ticket_type = guest.get("ticket_type", {}).get("name", "") if isinstance(guest.get("ticket_type"), dict) else ""
-            reg_date = guest.get("created_at", "")
+            name = guest.get("name", "")
+            email = guest.get("email", "")
+            first_name = guest.get("user_first_name", "")
+            last_name = guest.get("user_last_name", "")
+            status = guest.get("approval_status", "")
+            ticket = guest.get("event_ticket", {})
+            ticket_type = ticket.get("name", "") if isinstance(ticket, dict) else ""
+            reg_date = guest.get("registered_at", "")
             if reg_date:
                 reg_date = reg_date[:10]
-            writer.writerow([name, email, status, ticket_type, reg_date])
+            writer.writerow([name, email, first_name, last_name, status, ticket_type, reg_date])
 
     return filepath
 
@@ -167,23 +182,34 @@ def export_guests(api_key):
     """Main export flow: get URL from user, fetch data, save CSV."""
     print("=== Luma Guest Exporter ===")
     print()
-    url = input("Paste your Luma event URL (e.g. https://lu.ma/abc123): ").strip()
+    print("Paste any of these URL types:")
+    print("  - Event page:     https://luma.com/abc123")
+    print("  - Manage page:    https://luma.com/event/manage/evt-xxx/overview")
+    print("  - Guest list:     https://luma.com/event/manage/evt-xxx/guests")
+    print()
+    url = input("Paste your Luma event URL: ").strip()
 
-    slug = extract_event_slug(url)
-    if not slug:
+    parsed = parse_event_url(url)
+    if not parsed:
         print(f'Error: "{url}" is not a valid Luma event URL.')
-        print("Expected format: https://lu.ma/your-event or https://luma.com/your-event")
         sys.exit(1)
 
-    print(f"Looking up event: {slug}...")
-    entity = lookup_entity(api_key, slug)
-    if not entity:
-        print(f'Error: Event not found for "{slug}". Check the URL and try again.')
-        sys.exit(1)
+    if parsed["type"] == "api_id":
+        # Management/guest URL — we already have the event API ID
+        event_api_id = parsed["value"]
+        event_name = event_api_id
+        print(f"Event ID detected: {event_api_id}")
+    else:
+        # Public event page — resolve slug to API ID via entity lookup
+        slug = parsed["value"]
+        print(f"Looking up event: {slug}...")
+        event = lookup_entity(api_key, slug)
+        if not event:
+            print(f'Error: Event not found for "{slug}". Check the URL and try again.')
+            sys.exit(1)
+        event_api_id = event.get("api_id", slug)
+        event_name = event.get("name", slug)
 
-    event_api_id = entity.get("api_id", slug)
-    event_name = entity.get("name", slug)
-    print(f"Event found: {event_name}")
     print("Fetching guest list...")
 
     guests = fetch_guests(api_key, event_api_id)
