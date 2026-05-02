@@ -6,9 +6,12 @@ import csv
 import os
 import re
 import sys
+import time
 from datetime import datetime
 
 import requests
+from requests.adapters import HTTPAdapter
+from urllib3.util.retry import Retry
 
 BASE_URL = "https://public-api.luma.com"
 CONFIG_FILE = "config.ini"
@@ -93,18 +96,33 @@ def fetch_guests(api_key, event_api_id):
     headers = make_headers(api_key)
     guests = []
     cursor = None
+    page = 0
+
+    retry_strategy = Retry(total=3, backoff_factor=1, status_forcelist=[500, 502, 503, 504])
+    session = requests.Session()
+    session.mount("https://", HTTPAdapter(max_retries=retry_strategy))
 
     while True:
         params = {"event_api_id": event_api_id}
         if cursor:
             params["cursor"] = cursor
 
-        resp = requests.get(
-            f"{BASE_URL}/v1/event/get-guests",
-            headers=headers,
-            params=params,
-            timeout=30,
-        )
+        try:
+            resp = session.get(
+                f"{BASE_URL}/v1/event/get-guests",
+                headers=headers,
+                params=params,
+                timeout=30,
+            )
+        except requests.exceptions.SSLError:
+            if guests:
+                print(f"\nWarning: SSL connection lost after fetching {len(guests)} guests.")
+                print("This is caused by an outdated SSL library on your Mac.")
+                print("Partial results have been saved.")
+                break
+            print("Error: SSL connection failed. Try running the script again.")
+            sys.exit(1)
+
         if resp.status_code == 401:
             print("Error: Invalid API key. Run --setup to update it.")
             sys.exit(1)
@@ -112,11 +130,18 @@ def fetch_guests(api_key, event_api_id):
             print("Error: You don't have access to this event's guest list.")
             print("Make sure your API key belongs to the calendar that owns this event.")
             sys.exit(1)
+        if resp.status_code == 429:
+            print(f"\n  Rate limited by Luma API. Waiting 65 seconds... (fetched {len(guests)} guests so far)")
+            time.sleep(65)
+            continue
+
         resp.raise_for_status()
 
         data = resp.json()
         entries = data.get("entries", [])
         guests.extend(entries)
+        page += 1
+        print(f"  Page {page}: {len(entries)} guests (total: {len(guests)})")
 
         if not entries:
             break
@@ -124,6 +149,10 @@ def fetch_guests(api_key, event_api_id):
         if not cursor:
             break
 
+        # Stay under Luma's 300 requests/minute rate limit
+        time.sleep(0.25)
+
+    session.close()
     return guests
 
 
