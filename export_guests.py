@@ -38,7 +38,7 @@ def make_headers(api_key):
 def extract_event_slug(url):
     """Extract event slug from a Luma URL like https://lu.ma/abc123."""
     url = url.strip().rstrip("/")
-    match = re.match(r"https?://(?:www\.)?lu\.ma/([a-zA-Z0-9_-]+)", url)
+    match = re.match(r"https?://(?:www\.)?(?:lu\.ma|luma\.com)/([a-zA-Z0-9_-]+)", url)
     if not match:
         return None
     return match.group(1)
@@ -154,7 +154,7 @@ def export_guests(api_key):
     slug = extract_event_slug(url)
     if not slug:
         print(f'Error: "{url}" is not a valid Luma event URL.')
-        print("Expected format: https://lu.ma/your-event-slug")
+        print("Expected format: https://lu.ma/your-event or https://luma.com/your-event")
         sys.exit(1)
 
     print(f"Looking up event: {slug}...")
